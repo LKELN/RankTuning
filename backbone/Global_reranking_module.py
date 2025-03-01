@@ -8,6 +8,35 @@ import math
 from einops import rearrange, reduce, repeat
 import torch
 from torch import nn
+from torch import Tensor
+from timm.models.layers import trunc_normal_
+from thop import profile
+
+def _no_grad_trunc_normal_(tensor, mean, std, a, b):
+    def norm_cdf(x):
+        return (1. + math.erf(x / math.sqrt(2.))) / 2.
+
+    if (mean < a - 2 * std) or (mean > b + 2 * std):
+        warnings.warn(
+            "mean is more than 2 std from [a, b] in nn.init.trunc_normal_. " "The distribution of values may be incorrect.",
+            stacklevel=2)
+
+    with torch.no_grad():
+        l = norm_cdf((a - mean) / std)
+        u = norm_cdf((b - mean) / std)
+
+        tensor.uniform_(2 * l - 1, 2 * u - 1)
+        tensor.erfinv_()
+        tensor.mul_(std * math.sqrt(2.))
+        tensor.add_(mean)
+
+        tensor.clamp_(min=a, max=b)
+        return tensor
+
+
+def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
+    return _no_grad_trunc_normal_(tensor, mean, std, a, b)
+
 
 class Global_ranktuning(nn.Module):
     def __init__(self, train_batch_size=25, N=4, sort_num_heads=4, encoder_layer=2, sort_layers=4, num_corr=15,
@@ -37,7 +66,6 @@ class Global_ranktuning(nn.Module):
             x = x.reshape(args.train_batch_size, args.negs_num_per_query + args.pos_num_per_query + 1,
                           -1,
                           args.features_dim)
-        x = x.unsqueeze(0)
         correlation = torch.matmul(x[:, :1], x[:, 1:].permute(0, 1, 3, 2))
         q_sort = torch.argsort(correlation, dim=3, descending=True)
         k_sort = torch.argsort(correlation, dim=2, descending=True)
@@ -58,5 +86,3 @@ class Global_ranktuning(nn.Module):
         x = self.dim_decrease(x)  # batch_size,99
         x = x.softmax(dim=-1)[:, :, 1]
         return x
-
-
